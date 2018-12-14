@@ -34,6 +34,19 @@
 #include <sys/time.h>
 #include <netinet/in.h>
 #include <assert.h>
+#include <limits.h>
+
+#ifndef HOST_NAME_MAX
+# if defined(_POSIX_HOST_NAME_MAX)
+#  define HOST_NAME_MAX _POSIX_HOST_NAME_MAX
+# elif defined(MAXHOSTNAMELEN)
+#  define HOST_NAME_MAX MAXHOSTNAMELEN
+# elif defined(_SC_HOST_NAME_MAX)
+#  define HOST_NAME_MAX _SC_HOST_NAME_MAX
+# else
+#  error HOST_NAME_MAX is undefined
+# endif
+#endif /* HOST_NAME_MAX */
 
 #include "../util/BRUtil.h"
 #include "BREthereumNodeEndpoint.h"
@@ -54,7 +67,7 @@ struct BREthereumNodeEndpointRecord {
     BREthereumHash hash;
 
     /** An optional hostname - if not provided this will be a IP addr string */
-    char hostname[_POSIX_HOST_NAME_MAX + 1];
+    char hostname[HOST_NAME_MAX + 1];
 
     /** The 'Discovery Endpoint' */
     BREthereumDISNeighbor dis;
@@ -105,7 +118,7 @@ nodeEndpointCreateDetailed (BREthereumDISNeighbor dis,
     endpoint->nonce = nonce;
     endpoint->ephemeralKey = ephemeralKey;
 
-    inet_ntop (dis.node.domain, (void *) &dis.node.addr, endpoint->hostname, _POSIX_HOST_NAME_MAX + 1);
+    inet_ntop (dis.node.domain, (void *) &dis.node.addr, endpoint->hostname, HOST_NAME_MAX + 1);
 
     endpoint->discovered = ETHEREUM_BOOLEAN_FALSE;
     return endpoint;
@@ -289,9 +302,11 @@ nodeEndpointShowHello (BREthereumNodeEndpoint endpoint) {
 
 extern BREthereumBoolean
 nodeEndpointHasHelloCapability (BREthereumNodeEndpoint endpoint,
-                                const char *name) {
+                                const char *name,
+                                uint32_t version) {
     for (size_t index = 0; index < array_count(endpoint->hello.capabilities); index++)
-        if (0 == strcmp (name, endpoint->hello.capabilities[index].name))
+        if (0 == strcmp (name, endpoint->hello.capabilities[index].name) &&
+            version == endpoint->hello.capabilities[index].version)
             return ETHEREUM_BOOLEAN_TRUE;
     return ETHEREUM_BOOLEAN_FALSE;
 }
@@ -301,7 +316,7 @@ nodeEndpointHasHelloMatchingCapability (BREthereumNodeEndpoint source,
                                         BREthereumNodeEndpoint target) {
     for (size_t index = 0; index < array_count(source->hello.capabilities); index++) {
         BREthereumP2PCapability *scap = &source->hello.capabilities[index];
-        if (ETHEREUM_BOOLEAN_IS_TRUE (nodeEndpointHasHelloCapability (target, scap->name)))
+        if (ETHEREUM_BOOLEAN_IS_TRUE (nodeEndpointHasHelloCapability (target, scap->name, scap->version)))
             return scap;
     }
     return NULL;
@@ -707,7 +722,9 @@ main(int argc, const char **argv) {
 const char *bootstrapLCLEnodes[] = {
 #if defined (LES_SUPPORT_PARITY)
     // Localhost - Parity
-    "enode://4483ac6134c85ecbd31d14168f1c97b82bdc45c442e81277f52428968de41add46549f8d6c9c8c3432f3b8834b018c350ac37d87d70d67e599f42f68a96717fc@127.0.0.1:30303", // SSD Archive
+//  "enode://4483ac6134c85ecbd31d14168f1c97b82bdc45c442e81277f52428968de41add46549f8d6c9c8c3432f3b8834b018c350ac37d87d70d67e599f42f68a96717fc@127.0.0.1:30303",     // SSD Archive
+    "enode://4483ac6134c85ecbd31d14168f1c97b82bdc45c442e81277f52428968de41add46549f8d6c9c8c3432f3b8834b018c350ac37d87d70d67e599f42f68a96717fc@192.168.1.126:30303", // SSD Archive
+    // 192.168.1.126
 #endif
 
 #if defined (LES_SUPPORT_GETH)
@@ -723,15 +740,16 @@ const char *bootstrapLCLEnodes[] = {
 const char *bootstrapBRDEnodes[] = {
 #if defined (LES_SUPPORT_PARITY)
     // Archival
-    "enode://b253e581a0d9e515164c9bf9a62db85ccc8893fd9a2b6968fac4910bd7dfe334072d4d9eb5a14a53d4647b87c0164e32d80c2f387d6d2c54e8437062a2a5855d@35.202.248.103:30303",
+    "enode://6b3d1d0d0830f399167af983585a671e433e2080c1c3ebe4f859ee31aebcac88dbad59495155b01ed5b6b292df86b48e2302d896238671893faee60b5a47dda2@167.99.160.105:30303",
+    "enode://b253e581a0d9e515164c9bf9a62db85ccc8893fd9a2b6968fac4910bd7dfe334072d4d9eb5a14a53d4647b87c0164e32d80c2f387d6d2c54e8437062a2a5855d@35.239.120.179:30303",
 #endif
 
 #if defined (LES_SUPPORT_GETH)
     // Archival
     "enode://3d0bce4775635c65733b7534f1bccd48720632f5d66a44030c1d13e2e5883262d9d22cdb8365c03137e8d5fbbf5355772acf35b08d6f9b5ad69bb24ad52a20cc@35.184.255.33:30303",
     // Full
-    "enode://e70d9a9175a2cd27b55821c29967fdbfdfaa400328679e98ed61060bc7acba2e1ddd175332ee4a651292743ffd26c9a9de8c4fce931f8d7271b8afd7d221e851@104.197.99.24:30303",
-    "enode://e70d9a9175a2cd27b55821c29967fdbfdfaa400328679e98ed61060bc7acba2e1ddd175332ee4a651292743ffd26c9a9de8c4fce931f8d7271b8afd7d221e851@35.193.192.189:30303",
+//    "enode://e70d9a9175a2cd27b55821c29967fdbfdfaa400328679e98ed61060bc7acba2e1ddd175332ee4a651292743ffd26c9a9de8c4fce931f8d7271b8afd7d221e851@104.197.99.24:30303",
+//    "enode://e70d9a9175a2cd27b55821c29967fdbfdfaa400328679e98ed61060bc7acba2e1ddd175332ee4a651292743ffd26c9a9de8c4fce931f8d7271b8afd7d221e851@35.193.192.189:30303",
 #endif
     NULL
 };

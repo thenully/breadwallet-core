@@ -63,9 +63,6 @@ nodeStateAnnounce (BREthereumNode node,
                    BREthereumNodeEndpointRoute route,
                    BREthereumNodeState state);
 
-static BREthereumNodeType
-nodeGetType (BREthereumNode node);
-
 static uint64_t
 nodeGetThenIncrementMessageIdentifier (BREthereumNode node,
                                        size_t byIncrement);
@@ -175,7 +172,7 @@ nodeProtocolReasonDescription (BREthereumNodeProtocolReason reason) {
     protocolReasonDescriptions [] = {
         "Exhausted",
         "Non-Standard Port",
-        "UDP Ping_Pong Missed",
+        "Ping_Pong Missed",
         "UDP Excessive Byte Count",
         "TCP Authentication",
         "TCP Hello Missed",
@@ -418,13 +415,16 @@ provisionerEstablish (BREthereumNodeProvisioner *provisioner,
     assert (0 != provisioner->messageContentLimit);
 
     // We'll need this many messages to handle all the 'requests'
-    provisioner->messagesCount = (provisionerGetCount (provisioner) + provisioner->messageContentLimit - 1) / provisioner->messageContentLimit;
+    provisioner->messagesCount = (PROVISION_SUBMIT_TRANSACTION == provisioner->provision.type
+                                  ? provisionerGetCount (provisioner)
+                                  : (provisionerGetCount (provisioner) + provisioner->messageContentLimit - 1) / provisioner->messageContentLimit);
 
     // Set the `messageIdentifier` and the `messagesRemainingCount` given the `messagesCount`
     provisioner->messageIdentifier = nodeGetThenIncrementMessageIdentifier (node, provisioner->messagesCount);
     provisioner->messagesRemainingCount = provisioner->messagesCount;
 
-    // For SUBMIT_TRANSACTION we send two messages but only expect one back; fake receivedCount.
+    // For SUBMIT_TRANSACTION we send two messages but only expect one back; so, we increment
+    // received count it make it look like one already arrived.
     provisioner->messagesReceivedCount  = (PROVISION_SUBMIT_TRANSACTION == provisioner->provision.type
                                            ? 1
                                            : 0);
@@ -535,11 +535,6 @@ struct BREthereumNodeRecord {
     pthread_mutex_t lock;
 };
 
-static BREthereumNodeType
-nodeGetType (BREthereumNode node) {
-    return node->type;
-}
-
 extern void
 nodeShow (BREthereumNode node) {
     char descUDP[128], descTCP[128];
@@ -551,7 +546,7 @@ nodeShow (BREthereumNode node) {
     eth_log (LES_LOG_TOPIC, "   UDP       : %s", nodeStateDescribe (&node->states[NODE_ROUTE_UDP], descUDP));
     eth_log (LES_LOG_TOPIC, "   TCP       : %s", nodeStateDescribe (&node->states[NODE_ROUTE_TCP], descTCP));
     eth_log (LES_LOG_TOPIC, "   Discovered: %s", (ETHEREUM_BOOLEAN_IS_TRUE(node->discovered) ? "Yes" : "No"));
-    eth_log (LES_LOG_TOPIC, "   Credits   : %llu", node->credits);
+    eth_log (LES_LOG_TOPIC, "   Credits   : %" PRIu64, node->credits);
 }
 
 extern const BREthereumNodeEndpoint
@@ -778,9 +773,26 @@ nodeUpdatedLocalStatus (BREthereumNode node,
     return ETHEREUM_BOOLEAN_FALSE;
 }
 
+extern BREthereumNodeType
+nodeGetType (BREthereumNode node) {
+    return node->type;
+}
+
 extern BREthereumNodePriority
 nodeGetPriority (BREthereumNode node) {
     return node->priority;
+}
+
+static inline void
+nodeUpdateTimeout (BREthereumNode node,
+                   time_t now) {
+    node->timeout = now + DEFAULT_NODE_TIMEOUT_IN_SECONDS;
+}
+
+static inline void
+nodeUpdateTimeoutRecv (BREthereumNode node,
+                       time_t now) {
+    node->timeout = now + DEFAULT_NODE_TIMEOUT_IN_SECONDS_RECV;
 }
 
 static BREthereumNodeState
@@ -803,7 +815,8 @@ nodeProcessSuccess (BREthereumNode node,
 
 extern BREthereumNodeState
 nodeConnect (BREthereumNode node,
-             BREthereumNodeEndpointRoute route) {
+             BREthereumNodeEndpointRoute route,
+             time_t now) {
     int error;
 
     // Nothing if not AVAILABLE
@@ -822,6 +835,7 @@ nodeConnect (BREthereumNode node,
         return nodeProcessFailure (node, route, NULL, nodeStateCreateErrorUnix(error));
 
     // Move to the next state.
+    nodeUpdateTimeout(node, now);
     return nodeStateAnnounce(node, route, nodeStateCreateConnecting (NODE_ROUTE_TCP == route
                                                                      ? NODE_CONNECT_AUTH
                                                                      : NODE_CONNECT_PING));
@@ -853,6 +867,19 @@ nodeDisconnect (BREthereumNode node,
 ///
 /// MARK: - Node Process
 ///
+extern BREthereumBoolean
+nodeCanHandleProvision (BREthereumNode node,
+                        BREthereumProvision provision) {
+    switch (node->type) {
+        case NODE_TYPE_UNKNOWN:
+            return ETHEREUM_BOOLEAN_FALSE;
+        case NODE_TYPE_GETH:
+            return AS_ETHEREUM_BOOLEAN(((BREthereumLESMessageIdentifier) -1) != provisionGetMessageLESIdentifier (provision.type));
+        case NODE_TYPE_PARITY:
+            return AS_ETHEREUM_BOOLEAN(((BREthereumPIPRequestType) -1) != provisionGetMessagePIPIdentifier(provision.type));
+    }
+}
+
 extern void
 nodeHandleProvision (BREthereumNode node,
                      BREthereumProvision provision) {
@@ -888,7 +915,8 @@ nodeHandleProvisionerMessage (BREthereumNode node,
                                    provisioner->provision.identifier,
                                    provisioner->provision.type,
                                    PROVISION_SUCCESS,
-                                   { .success = { provisioner->provision }}
+                                   provisioner->provision,
+                                   { .success = { }}
                                });
         // ... and remove the provisioner
         for (size_t index = 0; index < array_count (node->provisioners); index++)
@@ -959,7 +987,7 @@ nodeProcessRecvDIS (BREthereumNode node,
                     nodeEndpointGetDISNeighbor(node->local).key }}
             };
             if (NODE_STATUS_ERROR == nodeSend (node, NODE_ROUTE_UDP, pong))
-                nodeStateAnnounce(node, NODE_ROUTE_TCP, nodeStateCreateErrorProtocol(NODE_PROTOCOL_PING_PONG_MISSED));
+                nodeStateAnnounce(node, NODE_ROUTE_UDP, nodeStateCreateErrorProtocol(NODE_PROTOCOL_PING_PONG_MISSED));
 
             break;
         }
@@ -1020,7 +1048,6 @@ nodeProcessRecvLES (BREthereumNode node,
             break;
 
         case LES_MESSAGE_CONTRACT_CODES:
-        case LES_MESSAGE_HEADER_PROOFS:
         case LES_MESSAGE_HELPER_TRIE_PROOFS:;
             eth_log (LES_LOG_TOPIC, "Recv: [ LES, %15s ] Unexpected Response",
                      messageLESGetIdentifierName (message.identifier));
@@ -1032,6 +1059,7 @@ nodeProcessRecvLES (BREthereumNode node,
         case LES_MESSAGE_PROOFS:
         case LES_MESSAGE_PROOFS_V2:
         case LES_MESSAGE_TX_STATUS:
+        case LES_MESSAGE_HEADER_PROOFS:
             // Find the provisioner applicable to `message`...
             for (size_t index = 0; index < array_count (node->provisioners); index++) {
                 BREthereumNodeProvisioner *provisioner = &node->provisioners[index];
@@ -1050,7 +1078,6 @@ nodeProcessRecvLES (BREthereumNode node,
             break;
     }
     if (mustReleaseMessage) messageLESRelease (&message);
-
 }
 
 static void
@@ -1133,18 +1160,6 @@ nodeProcessRecvPIP (BREthereumNode node,
     }
 
     if (mustReleaseMessage) messagePIPRelease (&message);
-}
-
-static inline void
-nodeUpdateTimeout (BREthereumNode node,
-                   time_t now) {
-    node->timeout = now + DEFAULT_NODE_TIMEOUT_IN_SECONDS;
-}
-
-static inline void
-nodeUpdateTimeoutRecv (BREthereumNode node,
-                   time_t now) {
-    node->timeout = now + DEFAULT_NODE_TIMEOUT_IN_SECONDS_RECV;
 }
 
 static uint64_t
@@ -1465,10 +1480,17 @@ nodeProcess (BREthereumNode node,
                     nodeEndpointShowHello (node->remote);
 
                     // Assign the node type even before checking capabilities.
-                    if (ETHEREUM_BOOLEAN_IS_TRUE (nodeEndpointHasHelloCapability (node->remote, "pip")))
+                    if (ETHEREUM_BOOLEAN_IS_TRUE (nodeEndpointHasHelloCapability (node->remote, "pip", LES_SUPPORT_PARITY_VERSION)))
                         node->type = NODE_TYPE_PARITY;
-                    else if (ETHEREUM_BOOLEAN_IS_TRUE (nodeEndpointHasHelloCapability (node->remote, "les")))
+                    else if (ETHEREUM_BOOLEAN_IS_TRUE (nodeEndpointHasHelloCapability (node->remote, "les", LES_SUPPORT_GETH_VERSION)))
                         node->type = NODE_TYPE_GETH;
+
+                    // Confirm that the remote supports ETH.  We've seen a node announce support for
+                    // PIPv1 and being 200,000 blocks into the future.  Perhaps we avoid connecting
+                    // to such a node - but will still have to handle rogue nodes.
+                    if (ETHEREUM_BOOLEAN_IS_FALSE(nodeEndpointHasHelloCapability (node->remote, "eth", 62)) ||
+                        ETHEREUM_BOOLEAN_IS_FALSE(nodeEndpointHasHelloCapability (node->remote, "eth", 63)))
+                        return nodeProcessFailure (node, NODE_ROUTE_TCP, &message, nodeStateCreateErrorProtocol(NODE_PROTOCOL_CAPABILITIES_MISMATCH));
 
                     // Confirm that the remote has one and only one of the local capabilities.  It is unlikely,
                     // but possible, that a remote offers both LESv2 and PIPv1 capabilities - we aren't interested.
@@ -1478,10 +1500,6 @@ nodeProcess (BREthereumNode node,
 
                     if (NULL == capability)
                         return nodeProcessFailure(node, NODE_ROUTE_TCP, &message, nodeStateCreateErrorProtocol(NODE_PROTOCOL_CAPABILITIES_MISMATCH));
-
-                    // ... and the protocol version.
-//                    updateLocalEndpointStatusMessage(node->local, node->type, capability->version);
-//                    nodeEndpointShowStatus (node->local);
 
                     // https://github.com/ethereum/wiki/wiki/ÐΞVp2p-Wire-Protocol
                     // ÐΞVp2p is designed to support arbitrary sub-protocols (aka capabilities) over the basic wire
@@ -2098,7 +2116,10 @@ nodeRecv (BREthereumNode node,
                 if (error) return nodeRecvFailed (node, NODE_ROUTE_TCP, nodeStateCreateErrorUnix (error));
 
                 pthread_mutex_lock (&node->lock);
-                assert (ETHEREUM_BOOLEAN_IS_TRUE(frameCoderDecryptHeader(node->frameCoder, header, 32)));
+                if (ETHEREUM_BOOLEAN_IS_FALSE(frameCoderDecryptHeader(node->frameCoder, header, 32))) {
+                    pthread_mutex_unlock (&node->lock);
+                    return nodeRecvFailed (node, NODE_ROUTE_TCP, nodeStateCreateErrorProtocol(NODE_PROTOCOL_TCP_AUTHENTICATION));
+                }
                 pthread_mutex_unlock (&node->lock);
                 headerCount = ((uint32_t)(header[2]) <<  0 |
                                (uint32_t)(header[1]) <<  8 |
@@ -2201,6 +2222,8 @@ nodeRecv (BREthereumNode node,
 }
 
 
+#pragma clang diagnostic push
+#pragma GCC diagnostic push
 #pragma clang diagnostic ignored "-Wunused-function"
 #pragma GCC diagnostic ignored "-Wunused-function"
 static uint64_t

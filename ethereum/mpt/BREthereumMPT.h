@@ -74,12 +74,15 @@ mptNodePathsRelease (BRArrayOf(BREthereumMPTNodePath) paths);
 
 extern BRRlpData
 mptNodePathGetValue (BREthereumMPTNodePath path,
-                     BREthereumHash key,
+                     BREthereumData key,
                      BREthereumBoolean *found);
 
+extern BREthereumData
+mptNodePathGetKeyFragment (BREthereumMPTNodePath path);
+    
 extern BREthereumBoolean
 mptNodePathIsValid (BREthereumMPTNodePath path,
-                    BREthereumHash key);
+                    BREthereumData key);
 
 extern BREthereumMPTNodePath
 mptNodePathDecode (BRRlpItem item,
@@ -92,6 +95,18 @@ mptNodePathDecode (BRRlpItem item,
 extern BREthereumMPTNodePath
 mptNodePathDecodeFromBytes (BRRlpItem item,
                             BRRlpCoder coder);
+
+/**
+ * Create a Key Path from a value
+ */
+extern BREthereumData
+mptKeyGetFromUInt64 (uint64_t value);
+
+/**
+ * Create a Key Path from a hash
+ */
+extern BREthereumData
+mptKeyGetFromHash (BREthereumHash hash);
 
 #ifdef __cplusplus
 }

@@ -63,6 +63,9 @@ provisionGetMessageLESIdentifier (BREthereumProvisionType type);
 extern BREthereumPIPRequestType
 provisionGetMessagePIPIdentifier (BREthereumProvisionType type);
 
+extern const char *
+provisionGetTypeName (BREthereumProvisionType type);
+    
 /**
  * Headers
  */
@@ -83,12 +86,6 @@ provisionHeadersConsume (BREthereumProvisionHeaders *provision,
 /**
  * Proofs
  */
-typedef struct {
-    // Merkle inclusion proof from CHT
-    BREthereumHash hash;
-    UInt256 totalDifficulty;
-} BREthereumBlockHeaderProof;
-
 typedef struct {
     // Request
     BRArrayOf(uint64_t) numbers;
@@ -203,16 +200,20 @@ typedef struct {
     } u;
 } BREthereumProvision;
 
+extern BREthereumProvision
+provisionCopy (BREthereumProvision *provision,
+               BREthereumBoolean copyResults);
+
+extern void
+provisionRelease (BREthereumProvision *provision,
+                  BREthereumBoolean releaseResults);
+
 extern BREthereumMessage
 provisionCreateMessage (BREthereumProvision *provision,
                         BREthereumMessageIdentifier type,
                         size_t messageContentLimit,
                         uint64_t messageIdBase,
                         size_t index);
-
-extern void
-provisionRelease (BREthereumProvision *provision,
-                  BREthereumBoolean releaseResults);
 
 extern void
 provisionHandleMessage (BREthereumProvision *provision,
@@ -231,10 +232,11 @@ typedef struct {
     BREthereumProvisionIdentifier identifier;
     BREthereumProvisionType type;
     BREthereumProvisionStatus status;
+    BREthereumProvision provision;
+
     union {
         // success - the provision
         struct {
-            BREthereumProvision provision;
         } success;
 
         // error - the error reason
