@@ -370,12 +370,12 @@ bcsSyncRange (BREthereumBCS bcs,
             assert (0);
 
         case P2P_WITH_BRD_SYNC:
-            //
-            // For a PRIME_WITH_ENDPOINT sync we rely 100% on the BRD backend to provide any and
+
+            // For a P2P_WITH_BRD_SYNC sync we rely 100% on the BRD backend to provide any and
             // all blocks of interest - which is any block involving `address` in a transaction
             // or a log.  But, we do need recent blocks anyway - not for transaction and logs -
             // but for block chain validity.
-            //
+
             interests = syncInterestsCreate (4,
                                              CLIENT_GET_BLOCKS_LOGS_AS_SOURCE,
                                              CLIENT_GET_BLOCKS_LOGS_AS_TARGET,
@@ -385,11 +385,11 @@ bcsSyncRange (BREthereumBCS bcs,
             break;
 
         case P2P_ONLY:
-            //
-            // For a FULL_BLOCKCHAIN sync we run our 'N-Ary Search on Account Changes' algorithm
+
+            // For a P2P_ONLY sync we run our 'N-Ary Search on Account Changes' algorithm
             // which has a (current) weakness on 'ERC20 transfers w/ address as target'.  So, we
             // exploit the BRD backend, view the `getBlocksCallback()`, to get interesting blocks.
-            //
+
             interests = syncInterestsCreate(1, CLIENT_GET_BLOCKS_LOGS_AS_TARGET);
             blockNumberStartAdjusted = blockNumberStart;
             break;
@@ -424,6 +424,10 @@ extern void
 bcsSendTransaction (BREthereumBCS bcs,
                     BREthereumTransaction transaction) {
     assert (BRD_ONLY != bcs->mode);
+
+    // Submit the transaction to the P2P network.  Be sure to copy the transaction as
+    // `bcsSignalSubmitTransaction()` expects ownership.
+
     bcsSignalSubmitTransaction (bcs, transactionCopy (transaction));
 }
 
@@ -433,8 +437,10 @@ bcsSendTransactionRequest (BREthereumBCS bcs,
                            uint64_t blockNumber,
                            uint64_t blockTransactionIndex) {
     assert (P2P_ONLY == bcs->mode || P2P_WITH_BRD_SYNC == bcs->mode);
-    // There is a transaction in `blockNumber` - get the block header and 'flow through' the logic
-    // to find the suspected transaction.
+
+    // The block at `blockNumber` has a transaction of interest.  If we ask LES to provide
+    // a block header, then our existing logic will find the transaction.
+
     lesProvideBlockHeaders (bcs->les,
                             NODE_REFERENCE_ANY,
                             (BREthereumLESProvisionContext) bcs,
@@ -448,8 +454,10 @@ bcsSendLogRequest (BREthereumBCS bcs,
                    uint64_t blockNumber,
                    uint64_t blockTransactionIndex) {
     assert (P2P_ONLY == bcs->mode || P2P_WITH_BRD_SYNC == bcs->mode);
-    // There is a log in `blockNumber` - get the block header and 'flow through' the logic to find
-    // the suspected log.
+
+    // The block as `blockNumber` has a log of interest.  If we ask LES to provide a block
+    // header, then our existing logic will find the log.
+
     lesProvideBlockHeaders (bcs->les,
                             NODE_REFERENCE_ANY,
                             (BREthereumLESProvisionContext) bcs,
@@ -464,7 +472,13 @@ bcsReportInterestingBlocks (BREthereumBCS bcs,
                             BRArrayOf(uint64_t) blockNumbers) {
     assert (P2P_ONLY == bcs->mode || P2P_WITH_BRD_SYNC == bcs->mode);
     eth_log ("BCS", "Report Interesting Blocks: %zu", array_count(blockNumbers));
+
+    // The blocks for `blockNumbers` have transactions and/or logs of interest.  Request the
+    // individual block headers and let the existing logic find the transactions and logs.
+
     for (size_t index = 0; index < array_count(blockNumbers); index++)
+        // This function can accept multiple blocks - but they need to be equally spaced.  In our
+        // case the provided blockNumbers are random-y.
         lesProvideBlockHeaders (bcs->les,
                                 NODE_REFERENCE_ANY,
                                 (BREthereumLESProvisionContext) bcs,
@@ -472,6 +486,10 @@ bcsReportInterestingBlocks (BREthereumBCS bcs,
                                 blockNumbers[index], 1, 0, ETHEREUM_BOOLEAN_FALSE);
     array_free (blockNumbers);
 }
+
+///
+/// MARK: - Pending Transactions and Logs
+///
 
 static int
 bcsLookupPendingTransaction (BREthereumBCS bcs,
@@ -549,6 +567,10 @@ bcsPendFindLogsByTransactionHash (BREthereumBCS bcs,
     }
     return logs;
 }
+
+///
+/// MARK: - Handlers
+///
 
 /**
  * Submit a new transaction to the Ethereum network.  The transaction will be submitted to all
@@ -1253,9 +1275,11 @@ bcsBlockNeedsHeaderProof (BREthereumBCS bcs,
     return blockHeaderIsCHTRoot (blockGetHeader (block));
 }
 
-/**
- * Handle a (generally new) block header.
- */
+//
+// Handle a (generally new) block header.  Based on the properties of the `header` we might need
+// to acquire block bodies, transaction receipts, accounts and/or a header proof.  We'll allocate
+// and extend the provided array arguments if needed.
+//
 static void
 bcsHandleBlockHeaderInternal (BREthereumBCS bcs,
                               BREthereumNodeReference node,
@@ -1338,11 +1362,14 @@ bcsHandleBlockHeaderInternal (BREthereumBCS bcs,
     // we'll handle the block's interesting transactions and logs; including if the block is an
     // orphan.  Note: the `bcsExtendChainIfAppropriate()` function will handle a fully constituted
     // block; however, as the above suggests, the block might be complete but likely empty.
-    //
-    // TODO: What if the header is well into the past - like during a sync?
     bcsExtendChainIfPossible(bcs, node, block, isFromSync);
 }
 
+//
+// Handle all the provided block headers.  Based on the properties of each header we might need
+// to acquire additional information (block bodies, transaction receipts, etc).  If so, we'll
+// gather up all the needs and make subsequent LES requests.
+//
 static void
 bcsHandleBlockHeaders (BREthereumBCS bcs,
                        BREthereumNodeReference node,
@@ -1392,205 +1419,10 @@ bcsHandleBlockHeaders (BREthereumBCS bcs,
 }
 
 ///
-/// MARK: - Account State
-///
-
-static void
-bcsHandleAccountState (BREthereumBCS bcs,
-                       BREthereumNodeReference node,
-                       BREthereumAddress address,
-                       BREthereumHash blockHash,
-                       BREthereumAccountState account) {
-    // Ensure we have a Block
-    BREthereumBlock block = BRSetGet(bcs->blocks, &blockHash);
-    if (NULL == block) {
-        eth_log ("BCS", "Block %" PRIu64 " Missed (Account)", (NULL == block ? -1 : blockGetNumber(block)));
-        return;
-    }
-
-    // If the status has somehow errored, skip out with nothing more to do.
-    if (ETHEREUM_BOOLEAN_IS_TRUE(blockHasStatusError(block))) {
-        eth_log ("BCS", "Block %" PRIu64 " In Error (Account)", blockGetNumber(block));
-        return;
-    }
-
-    // We must be in a 'account needed' status
-    assert (ETHEREUM_BOOLEAN_IS_TRUE(blockHasStatusAccountStateRequest(block, BLOCK_REQUEST_PENDING)));
-
-    eth_log("BCS", "Account %" PRIu64 " Nonce %" PRIu64 ", Balance XX",
-            blockGetNumber(block),
-            accountStateGetNonce(account));
-
-    // Report the block status - we'll flag as HAS_ACCOUNT_STATE.
-    blockReportStatusAccountState(block, account);
-
-//    // TODO: How to update the overall, bcs account state?
-//    // If block is bcs->chain then block is the latest and we should update the bcs state;
-//    // however, most often, at least during a sync, the chain will have moved on by the time
-//    // this account state result is available - particularly during a sync
-//    //
-//    // Well, eventually, we'll catch up, so ...
-//    if (block == bcs->chain) {
-//        bcs->accountState = state;
-//        bcs->listener.accountStateCallback (bcs->listener.context,
-//                                            bcs->accountState);
-//    }
-
-    bcsExtendTransactionsAndLogsForBlockIfAppropriate (bcs, block);
-}
-
-static void
-bcsHandleAccountStates (BREthereumBCS bcs,
-                        BREthereumNodeReference node,
-                        BREthereumAddress address,
-                        OwnershipGiven BRArrayOf(BREthereumHash) hashes,
-                        OwnershipGiven BRArrayOf(BREthereumAccountState) states) {
-    for (size_t index = 0; index < array_count(hashes); index++)
-        bcsHandleAccountState (bcs, node, address, hashes[index], states[index]);
-    array_free (hashes);
-    array_free (states);
-}
-
-///
-/// MARK: - Block Bodies
-///
-
-/*!
- */
-static void
-bcsReleaseOmmersAndTransactionsFully (BREthereumBCS bcs,
-                                      OwnershipGiven BRArrayOf(BREthereumTransaction) transactions,
-                                      OwnershipGiven BRArrayOf(BREthereumBlockHeader) ommers) {
-    transactionsRelease(transactions);
-    blockHeadersRelease(ommers);
-}
-
-static void
-bcsHandleBlockBody (BREthereumBCS bcs,
-                    BREthereumNodeReference node,
-                    BREthereumHash blockHash,
-                    OwnershipGiven BRArrayOf(BREthereumTransaction) transactions,
-                    OwnershipGiven BRArrayOf(BREthereumBlockHeader) ommers) {
-    // Ensure we have a Block
-    BREthereumBlock block = BRSetGet(bcs->blocks, &blockHash);
-    if (NULL == block) {
-        eth_log ("BCS", "Block %" PRIu64 " Missed (Bodies)", (NULL == block ? -1 : blockGetNumber(block)));
-        bcsReleaseOmmersAndTransactionsFully(bcs, transactions, ommers);
-        return;
-    }
-
-    // Get the block status and begin filling it out.
-//    BREthereumBlockStatus activeStatus = blockGetStatus(block);
-
-    // If the status is some how in error, skip out with nothing more to do.
-    if (ETHEREUM_BOOLEAN_IS_TRUE(blockHasStatusError(block))) {
-        eth_log ("BCS", "Block %" PRIu64 " In Error (Bodies)", blockGetNumber(block));
-        bcsReleaseOmmersAndTransactionsFully(bcs, transactions, ommers);
-        return;
-    }
-
-    // We must be in a 'bodies needed' status
-    assert (ETHEREUM_BOOLEAN_IS_TRUE(blockHasStatusTransactionsRequest(block, BLOCK_REQUEST_PENDING)));
-
-    eth_log("BCS", "Bodies %" PRIu64 " O:%2lu, T:%3lu",
-            blockGetNumber(block),
-            array_count(ommers),
-            array_count(transactions));
-
-    // Update `block` with the reported ommers and transactions.  Note that generally
-    // these are not used.... but we take full ownership of the memory for ommers and transactions.
-    blockUpdateBody (block, ommers, transactions);
-
-    // Having filled out `block`, ensure that it is valid.  If invalid, change the status
-    // to 'error' and skip out.  Don't release anything as other handlers (receipts, account) may
-    // still be pending.
-    if (ETHEREUM_BOOLEAN_IS_FALSE(blockIsValid(block, ETHEREUM_BOOLEAN_TRUE))) {
-        blockReportStatusError(block, ETHEREUM_BOOLEAN_TRUE);
-        eth_log ("BCS", "Block %" PRIu64 " Invalid (Bodies)", blockGetNumber(block));
-        return;
-    }
-
-    // Find transactions of interest.
-    BREthereumTransaction *neededTransactions = NULL;
-
-    // Check the transactions one-by-one.
-    for (int i = 0; i < array_count(transactions); i++) {
-        BREthereumTransaction tx = transactions[i];
-        assert (NULL != tx);
-        
-        // If it is our transaction (as source or target), handle it.
-        if (ETHEREUM_BOOLEAN_IS_TRUE(transactionHasAddress(tx, bcs->address))) {
-            eth_log("BCS", "Bodies %" PRIu64 " Found Transaction at %d",
-                    blockGetNumber(block), i);
-
-            // We'll need a copy of the transaction as the orginal transaction is held in `block`
-            // and this transaction (the copy) will go into `needTransactions` for 'block status'
-            // reporting.
-            tx = transactionCopy(tx);
-
-            // Fill-out the status.  Note that gasUsed is zero.  When this block is chained
-            // we'll request the TxStatus so we can get a valid gasUsed value.
-            transactionSetStatus(tx, transactionStatusCreateIncluded (blockGetHash(block),
-                                                                      blockGetNumber(block),
-                                                                      i,
-                                                                      blockGetTimestamp(block),
-                                                                      transactionGetGasLimit(tx)));
-
-            if (NULL == neededTransactions) array_new (neededTransactions, 3);
-            array_add(neededTransactions, tx);
-        }
-        // else - TODO: Handle if has a 'contract' address of interest?
-    }
-
-    // Report the block status.  Do so even if neededTransaction is NULL.
-    blockReportStatusTransactions(block, neededTransactions);
-
-    if (NULL != neededTransactions) {
-        // Once we've identified a transaction we must get additional information:
-
-        // 1) Get the receipts - because the receipts hold the cummulative gasUsed which will use
-        //    to compute the gasUsed by each transaction.
-        if (ETHEREUM_BOOLEAN_IS_TRUE (blockHasStatusLogsRequest (block, BLOCK_REQUEST_NOT_NEEDED))) {
-            blockReportStatusLogsRequest (block, BLOCK_REQUEST_PENDING);
-            lesProvideReceiptsOne (bcs->les, node,
-                                   (BREthereumLESProvisionContext) bcs,
-                                   (BREthereumLESProvisionCallback) bcsSignalProvision,
-                                   blockGetHash(block));
-        }
-
-        // 2) We want a header proof too; to ensure a valid block w/ transaction.
-        if (ETHEREUM_BOOLEAN_IS_TRUE (blockHasStatusHeaderProofRequest(block, BLOCK_REQUEST_NOT_NEEDED))) {
-            blockReportStatusHeaderProofRequest (block, BLOCK_REQUEST_PENDING);
-            lesProvideBlockProofsOne (bcs->les, node,
-                                      (BREthereumLESProvisionContext) bcs,
-                                      (BREthereumLESProvisionCallback) bcsSignalProvision,
-                                      blockGetNumber(block));
-        }
-    }
-
-    // If we requested Receipts (for Logs) and have them, then we can process the Logs.
-    if (ETHEREUM_BOOLEAN_IS_TRUE(blockHasStatusLogsRequest(block, BLOCK_REQUEST_COMPLETE)))
-        blockLinkLogsWithTransactions (block);
-
-    // In the following, 'if appropriate' means complete and chained.
-    bcsExtendTransactionsAndLogsForBlockIfAppropriate (bcs, block);
-}
-
-static void
-bcsHandleBlockBodies (BREthereumBCS bcs,
-                      BREthereumNodeReference node,
-                      OwnershipGiven BRArrayOf(BREthereumHash) hashes,
-                      OwnershipGiven BRArrayOf(BREthereumBlockBodyPair) pairs) {
-    for (size_t index = 0; index < array_count(hashes); index++)
-        // Transactions and Uncles have 'OwnershipGiven'
-        bcsHandleBlockBody (bcs, node, hashes[index], pairs[index].transactions, pairs[index].uncles);
-    array_free (hashes);
-    array_free (pairs);
-}
-
-///
 /// MARK: - Header Proofs
 ///
+
+
 static void
 bcsHandleBlockProof (BREthereumBCS bcs,
                      BREthereumNodeReference node,
@@ -1651,10 +1483,199 @@ bcsHandleBlockProofs (BREthereumBCS bcs,
     array_free (proofs);
 }
 
+
+///
+/// MARK: - Account State
+///
+
+static void
+bcsHandleAccountState (BREthereumBCS bcs,
+                       BREthereumNodeReference node,
+                       BREthereumAddress address,
+                       BREthereumHash blockHash,
+                       BREthereumAccountState account) {
+    // Ensure we have a Block
+    BREthereumBlock block = BRSetGet(bcs->blocks, &blockHash);
+    if (NULL == block) {
+        eth_log ("BCS", "Block %" PRIu64 " Missed (Account)", (NULL == block ? -1 : blockGetNumber(block)));
+        return;
+    }
+
+    // If the status has somehow errored, skip out with nothing more to do.
+    if (ETHEREUM_BOOLEAN_IS_TRUE(blockHasStatusError(block))) {
+        eth_log ("BCS", "Block %" PRIu64 " In Error (Account)", blockGetNumber(block));
+        return;
+    }
+
+    // We must be in a 'account needed' status
+    assert (ETHEREUM_BOOLEAN_IS_TRUE(blockHasStatusAccountStateRequest(block, BLOCK_REQUEST_PENDING)));
+
+    eth_log("BCS", "Account %" PRIu64 " Nonce %" PRIu64 ", Balance XX",
+            blockGetNumber(block),
+            accountStateGetNonce(account));
+
+    // Report the block status - we'll flag as HAS_ACCOUNT_STATE.
+    blockReportStatusAccountState(block, account);
+
+    // The block has the account state.  We'll need to report the account to the BCS listener;
+    // but we won't think about doing that here; instead we'll do that as a biproduct of
+    // chaining the block.
+
+    // In the following, 'if appropriate' means complete and chained.
+    bcsExtendTransactionsAndLogsForBlockIfAppropriate (bcs, block);
+}
+
+static void
+bcsHandleAccountStates (BREthereumBCS bcs,
+                        BREthereumNodeReference node,
+                        BREthereumAddress address,
+                        OwnershipGiven BRArrayOf(BREthereumHash) hashes,
+                        OwnershipGiven BRArrayOf(BREthereumAccountState) states) {
+    for (size_t index = 0; index < array_count(hashes); index++)
+        bcsHandleAccountState (bcs, node, address, hashes[index], states[index]);
+    array_free (hashes);
+    array_free (states);
+}
+
+///
+/// MARK: - Block Bodies
+///
+
+static void
+bcsReleaseOmmersAndTransactionsFully (BREthereumBCS bcs,
+                                      OwnershipGiven BRArrayOf(BREthereumTransaction) transactions,
+                                      OwnershipGiven BRArrayOf(BREthereumBlockHeader) ommers) {
+    transactionsRelease(transactions);
+    blockHeadersRelease(ommers);
+}
+
+static void
+bcsHandleBlockBody (BREthereumBCS bcs,
+                    BREthereumNodeReference node,
+                    BREthereumHash blockHash,
+                    OwnershipGiven BRArrayOf(BREthereumTransaction) transactions,
+                    OwnershipGiven BRArrayOf(BREthereumBlockHeader) ommers) {
+    // Ensure we have a Block
+    BREthereumBlock block = BRSetGet(bcs->blocks, &blockHash);
+    if (NULL == block) {
+        eth_log ("BCS", "Block %" PRIu64 " Missed (Bodies)", (NULL == block ? -1 : blockGetNumber(block)));
+        bcsReleaseOmmersAndTransactionsFully(bcs, transactions, ommers);
+        return;
+    }
+
+    // If the status is some how in error, skip out with nothing more to do.
+    if (ETHEREUM_BOOLEAN_IS_TRUE(blockHasStatusError(block))) {
+        eth_log ("BCS", "Block %" PRIu64 " In Error (Bodies)", blockGetNumber(block));
+        bcsReleaseOmmersAndTransactionsFully(bcs, transactions, ommers);
+        return;
+    }
+
+    // We must be in a 'bodies needed' status
+    assert (ETHEREUM_BOOLEAN_IS_TRUE(blockHasStatusTransactionsRequest(block, BLOCK_REQUEST_PENDING)));
+
+    eth_log("BCS", "Bodies %" PRIu64 " O:%2lu, T:%3lu",
+            blockGetNumber(block),
+            array_count(ommers),
+            array_count(transactions));
+
+    // Update `block` with the reported ommers and transactions.  Note that generally
+    // these are not used.... but we take full ownership of the memory for ommers and transactions.
+    blockUpdateBody (block, ommers, transactions);
+
+    // Having filled out `block`, ensure that it is valid.  If invalid, change the status
+    // to 'error' and skip out.  Don't release anything as other handlers (receipts, account) may
+    // still be pending.
+    if (ETHEREUM_BOOLEAN_IS_FALSE(blockIsValid(block, ETHEREUM_BOOLEAN_TRUE))) {
+        blockReportStatusError(block, ETHEREUM_BOOLEAN_TRUE);
+        eth_log ("BCS", "Block %" PRIu64 " Invalid (Bodies)", blockGetNumber(block));
+        return;
+    }
+
+    // Find transactions of interest.
+    BREthereumTransaction *neededTransactions = NULL;
+
+    // Check the transactions one-by-one.
+    for (int i = 0; i < array_count(transactions); i++) {
+        BREthereumTransaction tx = transactions[i];
+        assert (NULL != tx);
+        
+        // If it is our transaction (as source or target), handle it.
+        if (ETHEREUM_BOOLEAN_IS_TRUE(transactionHasAddress(tx, bcs->address))) {
+            eth_log("BCS", "Bodies %" PRIu64 " Found Transaction at %d",
+                    blockGetNumber(block), i);
+
+            // We'll need a copy of the transaction as the orginal transaction is held in `block`
+            // and this transaction (the copy) will go into `needTransactions` for 'block status'
+            // reporting.
+            tx = transactionCopy(tx);
+
+            // Fill-out the status.  Note that gasUsed is unknown.  When this block is chained
+            // we'll request the TxStatus so we can get a valid gasUsed value.  In the mean time
+            // we'll use the transaction's gasLimit (as an upper bound).
+            transactionSetStatus(tx, transactionStatusCreateIncluded (blockGetHash(block),
+                                                                      blockGetNumber(block),
+                                                                      i,
+                                                                      blockGetTimestamp(block),
+                                                                      transactionGetGasLimit(tx)));
+
+            // Lazily allocate `neededTransactdions` and add `tx`
+            if (NULL == neededTransactions) array_new (neededTransactions, 3);
+            array_add(neededTransactions, tx);
+        }
+
+        // TDOO: Should we look for other addresses of interest, like for a contract?
+    }
+
+    // Report the block status.  Do so even if neededTransaction is NULL.
+    blockReportStatusTransactions(block, neededTransactions);
+
+    // Once we've identified a transaction as needed we must get additional information:
+    if (NULL != neededTransactions) {
+
+        // 1) Get the receipts - because the receipts hold the cummulative gasUsed which we'll use
+        //    to compute the gasUsed by each transaction.
+        if (ETHEREUM_BOOLEAN_IS_TRUE (blockHasStatusLogsRequest (block, BLOCK_REQUEST_NOT_NEEDED))) {
+            blockReportStatusLogsRequest (block, BLOCK_REQUEST_PENDING);
+            lesProvideReceiptsOne (bcs->les, node,
+                                   (BREthereumLESProvisionContext) bcs,
+                                   (BREthereumLESProvisionCallback) bcsSignalProvision,
+                                   blockGetHash(block));
+        }
+
+        // 2) We want a header proof too; to ensure a valid block w/ transaction. EXCEPT: Header
+        // proofs do not exist for recent blocks.  See `bcsHandleBlockProof()` below.
+        if (ETHEREUM_BOOLEAN_IS_TRUE (blockHasStatusHeaderProofRequest(block, BLOCK_REQUEST_NOT_NEEDED))) {
+            blockReportStatusHeaderProofRequest (block, BLOCK_REQUEST_PENDING);
+            lesProvideBlockProofsOne (bcs->les, node,
+                                      (BREthereumLESProvisionContext) bcs,
+                                      (BREthereumLESProvisionCallback) bcsSignalProvision,
+                                      blockGetNumber(block));
+        }
+    }
+
+    // If we requested Receipts (for Logs) and have them, then we can process the Logs.
+    if (ETHEREUM_BOOLEAN_IS_TRUE(blockHasStatusLogsRequest(block, BLOCK_REQUEST_COMPLETE)))
+        blockLinkLogsWithTransactions (block);
+
+    // In the following, 'if appropriate' means complete and chained.
+    bcsExtendTransactionsAndLogsForBlockIfAppropriate (bcs, block);
+}
+
+static void
+bcsHandleBlockBodies (BREthereumBCS bcs,
+                      BREthereumNodeReference node,
+                      OwnershipGiven BRArrayOf(BREthereumHash) hashes,
+                      OwnershipGiven BRArrayOf(BREthereumBlockBodyPair) pairs) {
+    for (size_t index = 0; index < array_count(hashes); index++)
+        // Transactions and Uncles have 'OwnershipGiven'
+        bcsHandleBlockBody (bcs, node, hashes[index], pairs[index].transactions, pairs[index].uncles);
+    array_free (hashes);
+    array_free (pairs);
+}
+
 ///
 /// MARK: - Transaction Receipts
 ///
-
 
 static BREthereumBoolean
 bcsHandleLogExtractInterest (BREthereumBCS bcs,
@@ -1790,7 +1811,8 @@ bcsHandleTransactionReceipts (BREthereumBCS bcs,
             // eth_log("BCS", "Block %" PRIu64 " Needs Bodies (for Logs)", blockGetNumber(block));
         }
 
-        // 2) We want a header proof too; to ensure a valid block w/ transactions + logs.
+        // 2) We want a header proof too; to ensure a valid block w/ transactions + logs. EXCEPT
+        // header proofs don't exist for recent blocks.
         if (ETHEREUM_BOOLEAN_IS_TRUE (blockHasStatusHeaderProofRequest(block, BLOCK_REQUEST_NOT_NEEDED))) {
             blockReportStatusHeaderProofRequest (block, BLOCK_REQUEST_PENDING);
             lesProvideBlockProofsOne (bcs->les, node,
@@ -1988,69 +2010,28 @@ bcsHandleTransactionStatuses (BREthereumBCS bcs,
     array_free (statuses);
 }
 
-//
-// Periodicaly get the transaction status for all pending transaction
-//
-static void
-bcsPeriodicDispatcher (BREventHandler handler,
-                       BREventTimeout *event) {
-    BREthereumBCS bcs = (BREthereumBCS) event->context;
-
-    // TODO: Avoid-ish a race condition on bcsRelease. This is the wrong approach.
-    if (NULL == bcs->les) return;
-
-    // If nothing to do; simply skip out.
-    if ((NULL == bcs->pendingTransactions || 0 == array_count (bcs->pendingTransactions)) &&
-        (NULL == bcs->pendingLogs         || 0 == array_count (bcs->pendingLogs)))
-        return;
-
-    // We'll request status for each `pendingTransaction`.
-    BRArrayOf(BREthereumHash) hashes;
-    array_new (hashes, array_count(bcs->pendingTransactions) + array_count(bcs->pendingLogs));
-    array_add_array (hashes, bcs->pendingTransactions, array_count(bcs->pendingTransactions));
-
-    // Add in hashes for each transaction referenced by `pendingLogs`
-    for (size_t index = 0; index < array_count(bcs->pendingLogs); index++) {
-        BREthereumHash logHash = bcs->pendingLogs[index];
-        BREthereumLog  log     = BRSetGet (bcs->logs, &logHash);
-        if (NULL != log) {
-            BREthereumHash hash;
-            logExtractIdentifier (log, &hash, NULL);
-            if (-1 == hashesIndex(hashes, hash))
-                array_add (hashes, hash);
-        }
-    }
-
-    // OwnershipGiven for `hashes` (hence, above, `hashes` is a new array).
-    lesProvideTransactionStatus (bcs->les,
-                                 NODE_REFERENCE_ALL,
-                                 (BREthereumLESProvisionContext) bcs,
-                                 (BREthereumLESProvisionCallback) bcsSignalProvision,
-                                 hashes);
-}
-
 ///
 /// MARK - Handle Transaction, Log, Peers and Account(?)
 ///
 
 
-/**
- * Handle a transaction by adding it to the set of BCS transactions and then announcing the
- * transaction with the listener's `transactionCallback`.
- *
- * NOTE: For implementation, this is the *only place* where `bcs->transactions` is extented w/ the
- * transaction and also the *only place* where the callback is invoked.  This method in invoked
- * when a tranaction: a) is submitted, b) is found in a block, c) is provided during BCS
- * initialization and d) has its status updated.  For a, b & c, the transaction will be added to
- * bcs->transactions.
- *
- * NOTE: ... also, because this in involded during BCS initialization, we might reconstitute a
- * transaction that is not yet included/errorred - that is, the transaction was saved while pending.
- * In such a case, we add `transaction` to `pendingTransactions`
- *
- * @param bcs bcs
- * @param transaction transaction
- */
+//
+// Handle a transaction by adding it to the set of BCS transactions and then announcing the
+// transaction with the listener's `transactionCallback`.
+//
+// NOTE: For implementation, this is the//only place* where `bcs->transactions` is extented w/ the
+// transaction and also the//only place* where the callback is invoked.  This method in invoked
+// when a tranaction: a) is submitted, b) is found in a block, c) is provided during BCS
+// initialization and d) has its status updated.  For a, b & c, the transaction will be added to
+// bcs->transactions.
+//
+// NOTE: ... also, because this in involded during BCS initialization, we might reconstitute a
+// transaction that is not yet included/errorred - that is, the transaction was saved while pending.
+// In such a case, we add `transaction` to `pendingTransactions`
+//
+// @param bcs bcs
+// @param transaction transaction
+//
 extern void
 bcsHandleTransaction (BREthereumBCS bcs,
                       OwnershipGiven BREthereumTransaction transaction) {
@@ -2113,15 +2094,15 @@ bcsHandleTransaction (BREthereumBCS bcs,
         transactionRelease (transaction);
 }
 
-/**
- * Handle a log by adding it to the set of BCS logs and then announcing the log with the
- * listener's `logCallback`
- *
- * NOTE: For implementation, ...
- *
- * @param bcs bcs
- * @param log log
- */
+//
+// Handle a log by adding it to the set of BCS logs and then announcing the log with the
+// listener's `logCallback`
+//
+// NOTE: For implementation, ...
+//
+// @param bcs bcs
+// @param log log
+//
 extern void
 bcsHandleLog (BREthereumBCS bcs,
               OwnershipGiven BREthereumLog log) {
@@ -2174,6 +2155,9 @@ bcsHandleLog (BREthereumBCS bcs,
         logRelease(log);
 }
 
+//
+// Handle nodes ..
+//
 extern void
 bcsHandleNodes (BREthereumBCS bcs,
                 BRArrayOf(BREthereumNodeConfig) peers) {
@@ -2182,6 +2166,9 @@ bcsHandleNodes (BREthereumBCS bcs,
     eth_log("BCS", "Peers %zu Saved", peersCount);
 }
 
+//
+//
+//
 static void
 bcsSyncReportBlocksCallback (BREthereumBCS bcs,
                              BREthereumBCSSync sync,
@@ -2202,6 +2189,9 @@ bcsSyncReportBlocksCallback (BREthereumBCS bcs,
     bcsHandleBlockHeaders (bcs, node, headers, 1);
 }
 
+//
+//
+//
 static void
 bcsSyncReportProgressCallback (BREthereumBCS bcs,
                                BREthereumBCSSync sync,
@@ -2231,6 +2221,9 @@ bcsSyncReportProgressCallback (BREthereumBCS bcs,
     }
 }
 
+//
+//
+//
 extern void
 bcsHandleProvision (BREthereumBCS bcs,
                     BREthereumLES les,
@@ -2341,3 +2334,43 @@ bcsHandleProvision (BREthereumBCS bcs,
         provisionResultRelease (&result);
 }
 
+//
+// Periodicaly get the transaction status for all pending transaction
+//
+static void
+bcsPeriodicDispatcher (BREventHandler handler,
+                       BREventTimeout *event) {
+    BREthereumBCS bcs = (BREthereumBCS) event->context;
+
+    // TODO: Avoid-ish a race condition on bcsRelease. This is the wrong approach.
+    if (NULL == bcs->les) return;
+
+    // If nothing to do; simply skip out.
+    if ((NULL == bcs->pendingTransactions || 0 == array_count (bcs->pendingTransactions)) &&
+        (NULL == bcs->pendingLogs         || 0 == array_count (bcs->pendingLogs)))
+        return;
+
+    // We'll request status for each `pendingTransaction`.
+    BRArrayOf(BREthereumHash) hashes;
+    array_new (hashes, array_count(bcs->pendingTransactions) + array_count(bcs->pendingLogs));
+    array_add_array (hashes, bcs->pendingTransactions, array_count(bcs->pendingTransactions));
+
+    // Add in hashes for each transaction referenced by `pendingLogs`
+    for (size_t index = 0; index < array_count(bcs->pendingLogs); index++) {
+        BREthereumHash logHash = bcs->pendingLogs[index];
+        BREthereumLog  log     = BRSetGet (bcs->logs, &logHash);
+        if (NULL != log) {
+            BREthereumHash hash;
+            logExtractIdentifier (log, &hash, NULL);
+            if (-1 == hashesIndex(hashes, hash))
+                array_add (hashes, hash);
+        }
+    }
+
+    // OwnershipGiven for `hashes` (hence, above, `hashes` is a new array).
+    lesProvideTransactionStatus (bcs->les,
+                                 NODE_REFERENCE_ALL,
+                                 (BREthereumLESProvisionContext) bcs,
+                                 (BREthereumLESProvisionCallback) bcsSignalProvision,
+                                 hashes);
+}

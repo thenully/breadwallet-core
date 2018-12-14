@@ -767,6 +767,8 @@ nodeUpdatedLocalStatus (BREthereumNode node,
     if (NODE_ERROR == node->states[route].type &&
         NODE_ERROR_PROTOCOL == node->states[route].u.error.type &&
         NODE_PROTOCOL_STATUS_MISMATCH == node->states[route].u.error.u.protocol) {
+
+        // Back to AVAILABLE.
         node->states[route].type = NODE_AVAILABLE;
         return ETHEREUM_BOOLEAN_TRUE;
         }

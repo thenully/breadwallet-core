@@ -31,7 +31,7 @@ messagePIPGetRequestName (BREthereumPIPRequestType type) {
     static const char *
     messagePIPRequestNames[] = {
         "Headers",
-        "Headers Proof",
+        "Header Proofs",
         "Tx Index",
         "Receipts",
         "Bodies",

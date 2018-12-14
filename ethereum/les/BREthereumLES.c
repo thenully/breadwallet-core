@@ -1121,25 +1121,37 @@ lesThread (BREthereumLES les) {
 
         // The block head has updated (presumably a fully validated block head - it must have
         // a valid total difficutly and it is non-trivial to have a valid total difficulty).  The
-        // new, valid blcok head impacts our local 'status' (message).  When connecting to peer
-        // nodes, we can confidently report a 'status' as the new block header - rather than as
-        // the genesis block, or other checkpoint we maintain.
+        // new, valid block head impacts our local 'status' (message).  With an updated 'status',
+        // when connecting to peer nodes, we can confidently report the new block header rather
+        // that the genesis block, or other checkpoint we maintain.
+        //
+        // As our new status approaches the head of the block chain, we should be able connect to
+        // more peers - that is, we won't require an archival node (starting from block 0).
+
         if (les->theTimeToUpdateBlockHeadIsNow) {
             eth_log (LES_LOG_TOPIC, "Updating Status%s", "");
 
             BREthereumP2PMessageStatus status = nodeEndpointGetStatus(les->localEndpoint);
+
             // Nothing can be holding the localEndpoint's status directly; all 'holders' are
             // nodes holding through localEndpoint.  The status itself includes possible references
             // to allocated memory.  We modify the above status and then set is in the local
             // endpoint - this 'status' safely owns any memory references; the old status is gone.
+
             status.headHash = les->head.hash;
             status.headNum  = les->head.number;
             status.headTd   = les->head.totalDifficulty;
             nodeEndpointSetStatus (les->localEndpoint, status);
 
-            // This will possibly change the state of nodes are are not available by making them
-            // available and inserting them, prioritized in `availableNodes`.  Importantly,
-            // `connectedNodes` does not change.
+            // Log it
+            nodeEndpointShowStatus (les->localEndpoint);
+
+            // With a new status, nodes that we previosly declared as unsuited might now be usable.
+            // We'll walk through all the nodes, let them know that the local status has changed,
+            // and then, if they might be impacted, make them available.
+            //
+            // Note that `connectedNodes` does not change and the node priority is respected.
+
             FOR_NODES (les, node)
                 if (ETHEREUM_BOOLEAN_IS_TRUE (nodeUpdatedLocalStatus(node, NODE_ROUTE_TCP)))
                     lesInsertNodeAsAvailable (les, node);

@@ -340,7 +340,7 @@ typedef void
 (*BREthereumBCSSyncReportBlocks) (BREthereumBCSSyncContext context,
                                   BREthereumBCSSync sync,
                                   BREthereumNodeReference node,
-                                  BRArrayOf(BREthereumBCSSyncResult) blocks);
+                                  BRArrayOf(BREthereumBCSSyncResult) results);
 
 typedef void
 (*BREthereumBCSSyncReportProgress) (BREthereumBCSSyncContext context,
