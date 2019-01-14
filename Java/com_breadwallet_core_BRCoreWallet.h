@@ -41,6 +41,14 @@ JNIEXPORT jobject JNICALL Java_com_breadwallet_core_BRCoreWallet_getLegacyAddres
 
 /*
  * Class:     com_breadwallet_core_BRCoreWallet
+ * Method:    getUsedLegacyReceiveAddress
+ * Signature: ()Lcom/breadwallet/core/BRCoreAddress;
+ */
+JNIEXPORT jobject JNICALL Java_com_breadwallet_core_BRCoreWallet_getUsedLegacyReceiveAddress
+        (JNIEnv *, jobject);
+
+/*
+ * Class:     com_breadwallet_core_BRCoreWallet
  * Method:    getAllAddresses
  * Signature: ()[Lcom/breadwallet/core/BRCoreAddress;
  */

@@ -149,6 +149,21 @@ JNIEXPORT jobject JNICALL Java_com_breadwallet_core_BRCoreWallet_getLegacyAddres
 
 /*
  * Class:     com_breadwallet_core_BRCoreWallet
+ * Method:    getUsedLegacyReceiveAddress
+ * Signature: ()Lcom/breadwallet/core/BRCoreAddress;
+ */
+JNIEXPORT jobject JNICALL Java_com_breadwallet_core_BRCoreWallet_getUsedLegacyReceiveAddress
+        (JNIEnv *env, jobject thisObject) {
+    BRWallet *wallet = (BRWallet *) getJNIReference (env, thisObject);
+
+    BRAddress *address = (BRAddress *) malloc (sizeof (BRAddress));
+    *address = BRUsedLegacyReceiveAddress (wallet);
+
+    return (*env)->NewObject (env, addressClass, addressConstructor, (jlong) address);
+}
+
+/*
+ * Class:     com_breadwallet_core_BRCoreWallet
  * Method:    getAllAddresses
  * Signature: ()[Lcom/breadwallet/core/BRCoreAddress;
  */
