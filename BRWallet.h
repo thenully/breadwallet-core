@@ -89,7 +89,7 @@ BRAddress BRWalletReceiveAddress(BRWallet *wallet);
 
 // returns the first unused external address (legacy pay-to-pubkey-hash)
 BRAddress BRWalletLegacyAddress(BRWallet *wallet);
-
+BRAddress BRUsedLegacyReceiveAddress(BRWallet *wallet);
 // writes all addresses previously genereated with BRWalletUnusedAddrs() to addrs
 // returns the number addresses written, or total number available if addrs is NULL
 size_t BRWalletAllAddrs(BRWallet *wallet, BRAddress addrs[], size_t addrsCount);

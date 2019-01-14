@@ -532,6 +532,34 @@ BRAddress BRWalletLegacyAddress(BRWallet *wallet)
     return addr;
 }
 
+// Thenully - BRUsedLegacyReceiveAddress
+BRAddress BRUsedLegacyReceiveAddress(BRWallet *wallet)
+{
+    BRAddress addr = BR_ADDRESS_NONE;
+    uint8_t script[] = { OP_DUP, OP_HASH160, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, OP_EQUALVERIFY, OP_CHECKSIG };
+    size_t internalCount = 0, externalCount = 0;
+    assert(wallet != NULL);
+    
+    pthread_mutex_lock(&wallet->lock);
+    internalCount = array_count(wallet->internalChain);
+    externalCount = array_count(wallet->externalChain);
+    
+    if (internalCount > 0) {
+        _BRWalletAddressFromHash160(wallet, addr.s, sizeof(addr), wallet->internalChain[0]);
+        pthread_mutex_unlock(&wallet->lock);
+    } else if (externalCount > 0) {
+        _BRWalletAddressFromHash160(wallet, addr.s, sizeof(addr), wallet->externalChain[0]);
+        pthread_mutex_unlock(&wallet->lock);
+    } else {
+        pthread_mutex_unlock(&wallet->lock);
+        BRWalletUnusedAddrs(wallet, &addr, 1, 0);
+    }
+    if (BRAddressHash160(&script[3], addr.s)) BRAddressFromScriptPubKey(addr.s, sizeof(addr), script, sizeof(script));
+
+    return addr;
+}
+
 // writes all addresses previously genereated with BRWalletUnusedAddrs() to addrs
 // returns the number addresses written, or total number available if addrs is NULL
 size_t BRWalletAllAddrs(BRWallet *wallet, BRAddress addrs[], size_t addrsCount)
@@ -541,19 +569,19 @@ size_t BRWalletAllAddrs(BRWallet *wallet, BRAddress addrs[], size_t addrsCount)
     assert(wallet != NULL);
     pthread_mutex_lock(&wallet->lock);
     internalCount = (! addrs || array_count(wallet->internalChain) < addrsCount) ?
-                    array_count(wallet->internalChain) : addrsCount;
-
+    array_count(wallet->internalChain) : addrsCount;
+    
     for (i = 0; addrs && i < internalCount; i++) {
         _BRWalletAddressFromHash160(wallet, addrs[i].s, sizeof(*addrs), wallet->internalChain[i]);
     }
-
+    
     externalCount = (! addrs || array_count(wallet->externalChain) < addrsCount - internalCount) ?
-                    array_count(wallet->externalChain) : addrsCount - internalCount;
-
+    array_count(wallet->externalChain) : addrsCount - internalCount;
+    
     for (i = 0; addrs && i < externalCount; i++) {
         _BRWalletAddressFromHash160(wallet, addrs[internalCount + i].s, sizeof(*addrs), wallet->externalChain[i]);
     }
-
+    
     pthread_mutex_unlock(&wallet->lock);
     return internalCount + externalCount;
 }
